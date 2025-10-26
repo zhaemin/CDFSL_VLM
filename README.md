@@ -4,7 +4,7 @@
 ### 1. LayerNorm Tuning
 Run the script below to fine-tune only the LayerNorm parameters:
 ```bash
-bash scripts/run_main_ln_only.sh
+bash scripts/run_ln_only.sh
 ```
 
 ### 2. Attribute-based Method
