@@ -1,8 +1,9 @@
 # CDFSL_VLM
 ##  Install
 ```bash
-cd cdfsl_attr
 conda create -n <name> python=3.10.8
+conda activate <name>
+cd cdfsl_attr
 pip install -r deps/requirements.txt
 pip install torch==2.8.0+cu126 torchvision==0.23.0+cu126 torchaudio==2.8.0 --extra-index-url https://download.pytorch.org/whl/cu126
 ```
