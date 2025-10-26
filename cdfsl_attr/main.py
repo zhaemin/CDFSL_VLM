@@ -9,7 +9,7 @@ import os
 
 # custom imports
 from datasets import build_dataset, build_dataloaders
-from fs import run_cliplora, run_ln_only, run_twostage, run_twostage_attr, run_visonly, run_twostage_family, run_prompt_tuning, run_ln_only_attr, run_ln_only_attr_slot
+from fs import run_cliplora, run_ln_only, run_twostage, run_prompt_tuning, run_ln_only_attr, run_ln_only_attr_slot
 from fs.utils import dump
 
 import core.vision_encoder.pe as pe

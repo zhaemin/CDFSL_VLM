@@ -85,7 +85,7 @@ class FGVCAircraft(DatasetBase):
     def variant_to_family_mapping(self):
         # 1) variant 정보 읽기: id -> variant
         variant_dict = {}
-        with open("../data/clip_fewshot/fgvc_aircraft/images_variant_test.txt", "r") as f:
+        with open(self.dataset_dir + "/images_variant_test.txt", "r") as f:
             for line in f:
                 parts = line.strip().split()
                 if len(parts) < 2:
@@ -96,7 +96,7 @@ class FGVCAircraft(DatasetBase):
 
         # 2) family 정보 읽어서 variant -> family 매핑 생성
         variant_to_family = {}
-        with open("../data/clip_fewshot/fgvc_aircraft/images_family_test.txt", "r") as f:
+        with open(self.dataset_dir + "/images_family_test.txt", "r") as f:
             for line in f:
                 parts = line.strip().split()
                 if len(parts) < 2:

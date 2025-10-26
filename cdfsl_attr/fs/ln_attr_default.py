@@ -65,8 +65,8 @@ def train_epoch(clip_model, optimizer, scheduler, scaler, train_loader, test_loa
         loss = F.cross_entropy(cosine_similarity, target)# - kl_div_loss
         scaler.scale(loss).backward()
 
-        clip_model.visual.attn_pool.attn.in_proj_weight.grad[768:] = 0
-        clip_model.visual.attn_pool.attn.in_proj_bias.grad[768:] = 0
+        clip_model.visual.attn_pool.attn.in_proj_weight.grad[768*2:] = 0
+        clip_model.visual.attn_pool.attn.in_proj_bias.grad[768*2:] = 0
 
         scaler.step(optimizer)
         scheduler.step()

@@ -41,9 +41,6 @@ def train_epoch(clip_model, optimizer, scheduler, scaler, train_loader, test_loa
         loss = F.cross_entropy(cosine_similarity, target)
         scaler.scale(loss).backward()
 
-        clip_model.visual.attn_pool.attn.in_proj_weight.grad[768:] = 0
-        clip_model.visual.attn_pool.attn.in_proj_bias.grad[768:] = 0
-
         scaler.step(optimizer)
         scheduler.step()
         optimizer.zero_grad()
@@ -89,14 +86,6 @@ def run_ln_only(args, clip_model, logit_scale, dataset, train_loader, val_loader
         text_start=args.ln_text_start
     )
     
-    clip_model.visual.attn_pool.attn.in_proj_weight.requires_grad_(True)
-    clip_model.visual.attn_pool.attn.in_proj_bias.requires_grad_(True)
-    clip_model.visual.attn_pool.probe.requires_grad_(True)
-
-    trainable_params.append(clip_model.visual.attn_pool.attn.in_proj_weight)
-    trainable_params.append(clip_model.visual.attn_pool.attn.in_proj_bias)
-    trainable_params.append(clip_model.visual.attn_pool.probe)
-
     print(f"Trainable parameters: {num_params(clip_model, trainable=True):,}")
     
     optimizer = torch.optim.AdamW(trainable_params, lr=args.lr, weight_decay=args.wd, betas=(0.9, 0.999))
