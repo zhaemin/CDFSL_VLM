@@ -106,9 +106,10 @@ def train_epoch(clip_model, optimizer, scheduler, scaler, train_loader, test_loa
 def run_ln_only_attr(args, clip_model, logit_scale, dataset, train_loader, val_loader, test_loader):
     
     total_iters = args.n_iters * args.shots
-    
+    clip_model.visual.attn_pool.init_attr_probe(args.num_attr)
     clip_model = clip_model.cuda().float()
-    print('pretrained: ', clip_model.visual.attn_pool.attr_probe)
+    
+    #print('pretrained: ', clip_model.visual.attn_pool.attr_probe)
     
     # train only layer-norm instances
     trainable_params, vision_trainable_params = trainable_norm_params(
@@ -172,7 +173,7 @@ def run_ln_only_attr(args, clip_model, logit_scale, dataset, train_loader, val_l
         clip_model.load_state_dict(state_dict, strict=False)
 
 
-    print('after_trained: ', clip_model.visual.attn_pool.attr_probe)
+    #print('after_trained: ', clip_model.visual.attn_pool.attr_probe)
     
     '''
     W = clip_model.visual.attn_pool.attn.in_proj_weight.detach().cpu()

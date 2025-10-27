@@ -122,6 +122,7 @@ def run_ln_only(args, clip_model, logit_scale, dataset, train_loader, val_loader
         if args.debug: break
 
     if args.n_iters > 0:
+        os.makedirs('./checkpoint', exist_ok=True)
         torch.save(clip_model.state_dict(), f"checkpoint/{args.exp_name}_{args.dataset}.pth")
 
     if args.n_iters == 0 and args.checkpoint != None:

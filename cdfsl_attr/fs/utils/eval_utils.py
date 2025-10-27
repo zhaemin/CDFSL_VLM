@@ -130,7 +130,7 @@ def evaluate_attr(args, clip_model, loader, template, classnames, prompt=False, 
     global_acc = 0.
     tot_samples = 0
     attr_mean_acc = 0.
-    attr_acc = [0 for _ in range(args.attr_num)]
+    attr_acc = [0 for _ in range(args.num_attr)]
 
     for i, (images, target) in enumerate(loader):
         images, target = images.cuda(), target.cuda()
@@ -183,7 +183,7 @@ def evaluate_attr_multiattn(args, clip_model, loader, template, classnames, prom
     global_acc = 0.
     tot_samples = 0
     attr_mean_acc = 0.
-    attr_acc = [0 for _ in range(args.attr_num)]
+    attr_acc = [0 for _ in range(args.num_attr)]
 
     for i, (images, target) in enumerate(loader):
         images, target = images.cuda(), target.cuda()

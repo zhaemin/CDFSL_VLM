@@ -91,6 +91,7 @@ def train_epoch(clip_model, optimizer, scheduler, scaler, train_loader, test_loa
 def run_ln_only_attr(args, clip_model, logit_scale, dataset, train_loader, val_loader, test_loader):
     
     clip_model = clip_model.cuda().float()
+    clip_model.visual.attn_pool.init_attr_probe(args.num_attr)
     total_iters = args.n_iters * args.shots
 
     # train only layer-norm instances

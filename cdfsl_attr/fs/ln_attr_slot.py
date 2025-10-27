@@ -131,9 +131,10 @@ def visualize_query_similarity(args, attns, save_dir='./vis'):
 def run_ln_only_attr_slot(args, clip_model, logit_scale, dataset, train_loader, val_loader, test_loader):
     
     total_iters = args.n_iters * args.shots
-    
+    clip_model.visual.attn_pool.init_attr_probe(args.num_attr)
     clip_model.visual.attn_pool.init_slot_attn()
     clip_model = clip_model.cuda().float()
+    
     print('pretrained: ', clip_model.visual.attn_pool.attr_probe)
     
     # train only layer-norm instances

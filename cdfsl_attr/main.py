@@ -98,8 +98,7 @@ def get_arguments():
     parser.add_argument('--target_layer', type=int, default=-1)
     parser.add_argument('--beta', type=float, default=1.0)
     parser.add_argument('--checkpoint', default=None)
-
-    parser.add_argument('--attr_num', type=int, default=8)
+    parser.add_argument('--num_attr', type=int, default=8)
 
     
     args = parser.parse_args()

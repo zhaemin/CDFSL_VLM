@@ -22,14 +22,8 @@ from core.vision_encoder.rope import Rope2D
 from core.vision_encoder.config import PEConfig, PETextConfig, PE_VISION_CONFIG, PE_TEXT_CONFIG, fetch_pe_checkpoint
 from loralib.layers import SelfAttentionLoRA
 
-from core.vision_encoder.multiattn import custom_multi_head_attention_forward
-import matplotlib.pyplot as plt
 
 logger = getLogger()
-
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
 
 
 class LayerScale(nn.Module):
@@ -45,73 +39,6 @@ class LayerScale(nn.Module):
     def init_tensors(self):
         self.gamma = nn.Parameter(self.init_values * torch.ones(self.dim))
 
-
-class CustomMultiheadAttention(nn.MultiheadAttention):
-    def __init__(self, embed_dim, num_heads, **kwargs):
-        super().__init__(embed_dim=embed_dim, num_heads=num_heads, **kwargs)
-        print('init_custommultiattn')
-
-    def forward(
-        self,
-        query: torch.Tensor,
-        key: torch.Tensor,
-        value: torch.Tensor,
-        key_padding_mask: Optional[torch.Tensor] = None,
-        need_weights: bool = True,
-        attn_mask: Optional[torch.Tensor] = None,
-        average_attn_weights: bool = True,
-        is_causal: bool = False,
-    ):
-        if self.batch_first:
-            # make sure that the transpose op does not affect the "is" property
-            if key is value:
-                if query is key:
-                    query = key = value = query.transpose(1, 0)
-                else:
-                    query, key = (x.transpose(1, 0) for x in (query, key))
-                    value = key
-            else:
-                query, key, value = (x.transpose(1, 0) for x in (query, key, value))
-                
-        key_padding_mask = F._canonical_mask(
-            mask=key_padding_mask,
-            mask_name="key_padding_mask",
-            other_type=F._none_or_dtype(attn_mask),
-            other_name="attn_mask",
-            target_type=query.dtype,
-        )
-
-        attn_mask = F._canonical_mask(
-            mask=attn_mask,
-            mask_name="attn_mask",
-            other_type=None,
-            other_name="",
-            target_type=query.dtype,
-            check_other=False,
-        )
-
-        attn_output, attn_output_weights = custom_multi_head_attention_forward(
-            query,
-            key,
-            value,
-            self.embed_dim,
-            self.num_heads,
-            self.in_proj_weight,
-            self.in_proj_bias,
-            self.bias_k,
-            self.bias_v,
-            self.add_zero_attn,
-            self.dropout,
-            self.out_proj.weight,
-            self.out_proj.bias,
-            training=self.training,
-            key_padding_mask=key_padding_mask,
-            need_weights=need_weights,
-            attn_mask=attn_mask,
-            average_attn_weights=average_attn_weights,
-            is_causal=is_causal,
-        )
-        return attn_output.transpose(1, 0), attn_output_weights
 
 class AttentionPooling(nn.Module):
     def __init__(
@@ -137,9 +64,6 @@ class AttentionPooling(nn.Module):
         self.attn = nn.MultiheadAttention(
             self.embed_dim, self.num_heads, batch_first=True
         )
-        #self.attn = CustomMultiheadAttention(
-        #    self.embed_dim, self.num_heads, batch_first=True
-        #)
 
         self.layernorm = norm_layer(embed_dim)
         self.mlp_width = int(embed_dim * mlp_ratio)
@@ -152,37 +76,10 @@ class AttentionPooling(nn.Module):
                 ]
             )
         )
-    
-    def init_attr_probe(self, num_attr_probe):
-        self.attr_probe = nn.Parameter(torch.randn(1, num_attr_probe, self.embed_dim))
 
     def forward(self, x: torch.Tensor, text=False):
-        '''
-        if not hasattr(self, 'k_cos_sim_done'):
-            K = x[0] @ self.attn.in_proj_weight[768:768*2].t() + self.attn.in_proj_bias[768:768*2]
-            K_norm = F.normalize(K, dim=-1)
-
-            cos_sim = torch.einsum('nd,md->nm', K_norm, K_norm)
-
-            plt.figure(figsize=(8, 8))
-            plt.imshow(cos_sim.cpu().detach(), cmap='viridis')
-            plt.colorbar(label='Cosine Similarity')
-            plt.title('Patch-Patch Cosine Similarity Heatmap')
-            plt.xlabel('Patch Index')
-            plt.ylabel('Patch Index')
-            plt.savefig(f'./vis/k_patch_cos_sim_after_tuning_k_proj.png')
-            plt.close()
-            
-            self.k_cos_sim_done = True
-        '''
-        
         batch, _, _ = x.shape
-        if hasattr(self, 'attr_probe'): 
-            probe = torch.cat([self.probe, self.attr_probe], dim=1)
-            q = probe.repeat((batch, 1, 1)).to(x.dtype)
-        else:
-            q = self.probe.repeat((batch, 1, 1)).to(x.dtype)
-
+        q = self.probe.repeat((batch, 1, 1)).to(x.dtype)
 
         x, attn = self.attn(q, x, x, need_weights=True)
         if text:
@@ -420,6 +317,7 @@ class VisionTransformer(nn.Module):
         output_dim: Optional[int] = 1280,
         attn_pooler_heads: int = 8,
         pool_type: Literal["attn", "tok", "avg", "none"] = "attn",
+        num_attr: int = 10,
     ):
         super().__init__()
         assert pool_type in ("attn", "tok", "avg", "none")
@@ -478,7 +376,14 @@ class VisionTransformer(nn.Module):
         else:
             self.attn_pool = None
             
-
+        self.attr_pool = AttentionPooling(
+                embed_dim=width,
+                num_probe=8,
+                num_heads=attn_pooler_heads,
+                act_layer=act_layer,
+                norm_layer=norm_layer,
+            )
+        
         self.init_tensors()
 
 
@@ -641,20 +546,23 @@ class VisionTransformer(nn.Module):
 
         return x
 
-    def forward(self, x: torch.Tensor, return_attn=False, attr=False, **kwargs):
+    def forward(self, x: torch.Tensor, return_attn=False, **kwargs):
         x = self.forward_features(x, norm=True, **kwargs)
+        wo_pool = x
         if self.pool_type == 'attn':
             x, attn = self._pool(x)
             x = x.squeeze(1)
         else:
             x = self._pool(x)
 
+        x_attr, attr_attn = self.attr_pool(wo_pool)
+        
         if self.proj_dim is not None:
             x = x @ self.proj
-
+            
         if return_attn: 
-            return x, attn
-        return x
+            return x, x_attr, attr_attn
+        return x, x_attr
 
 class TextTransformer(nn.Module):
     def __init__(
@@ -850,8 +758,8 @@ class CLIP(TextTransformer):
         self.logit_scale = nn.Parameter(torch.ones([]) * init_logit_scale)
         #self.multi_attn = nn.MultiheadAttention(self.width, num_heads=8, batch_first=True)
         
-    def encode_image(self, image, normalize: bool = False, return_attn=False, attr=False):
-        x = self.visual(image, return_attn=return_attn, attr=attr)
+    def encode_image(self, image, normalize: bool = False, return_attn=False):
+        x = self.visual(image, return_attn=return_attn)
         return F.normalize(x, dim=-1) if normalize else x
 
     def encode_video(self, video, normalize: bool = False): # b n c h w
