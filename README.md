@@ -14,12 +14,12 @@ pip install torch==2.8.0+cu126 torchvision==0.23.0+cu126 torchaudio==2.8.0 --ext
 Run the script below to fine-tune only the LayerNorm parameters:
 ```bash
 cd cdfsl_attr
-bash scripts/run_ln_only.sh
+bash scripts/run_ln_only.sh <data_dir>
 ```
 
 ### 2. Attribute-based Method
 Run the script below to execute the attribute-based adaptation approach:
 ```bash
 cd cdfsl_attr
-bash scripts/run_ln_attr.sh
+bash scripts/run_ln_attr.sh <data_dir> <num_attr>
 ```
