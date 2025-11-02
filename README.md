@@ -21,8 +21,7 @@ bash scripts/run_ln_only.sh <data_dir>
 ### 2. Attribute-based Method
 Run the script below to execute the attribute-based adaptation approach
 - <data_dir> : your own dataset root
-- <num_attr> : K, number of attributes
 ```bash
 cd cdfsl_attr
-bash scripts/run_ln_attr.sh <data_dir> <num_attr>
+bash scripts/run_ln_attr.sh <data_dir>
 ```
