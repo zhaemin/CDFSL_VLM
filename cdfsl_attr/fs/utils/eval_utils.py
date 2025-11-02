@@ -8,6 +8,32 @@ import torch.nn.functional as F
 import core.vision_encoder.transforms as transforms
 import clip
 from fs.utils.visualize import visualize_attentionmap, visualize_attentionbar, visualize_attention_combined
+import matplotlib.pyplot as plt
+import seaborn as sns
+import numpy as np
+
+def sinkhorn_batch(out, epsilon=0.05, n_iters=3):
+    # https://github.com/facebookresearch/swav/blob/main/main_swav.py
+    Q = torch.exp(out / epsilon) # Q is K-by-B for consistency with notations from our paper  => bs queries classes
+    B = Q.shape[2] # number of samples to assign -> num class
+    K = Q.shape[1] # how many queries -> 8
+
+    # make the matrix sums to 1
+    sum_Q = torch.sum(Q, dim=(1,2), keepdim=True)
+    Q /= sum_Q
+
+    for it in range(n_iters):
+        # normalize each row: total weight per queries must be 1/C
+        sum_of_rows = torch.sum(Q, dim=2, keepdim=True)
+        Q /= sum_of_rows
+        Q /= K
+
+        # normalize each column: total weight per classes must be 1/Q
+        Q /= torch.sum(Q, dim=1, keepdim=True)
+        Q /= B
+
+    Q *= B # the columns must sum to 1 so that Q is an assignment
+    return Q
 
 def cls_acc(output, target, topk=1):
     pred = output.topk(topk, 1, True, True)[1].t()
@@ -109,7 +135,7 @@ def evaluate(args, clip_model, loader, template, classnames, prompt=False, visua
     acc /= tot_samples
     return acc
 
-
+'''
 @torch.no_grad()
 def evaluate_attr(args, clip_model, loader, template, classnames, prompt=False, visualize=False):
     clip_model.eval()
@@ -139,8 +165,13 @@ def evaluate_attr(args, clip_model, loader, template, classnames, prompt=False, 
         image_features = image_features / image_features.norm(dim=-1, keepdim=True)
 
         cosine_similarity = torch.einsum('bnd, cd -> bnc', image_features, text_features)
+
+        #probs = F.softmax(cosine_similarity, dim=-1)
+        #entropy = -torch.sum(probs * torch.log(probs + 1e-8), dim=-1)
+
         global_logits = cosine_similarity[:, 0]
         logits = cosine_similarity.mean(dim=1)
+
         acc += cls_acc(logits, target) * len(logits)
         global_acc += cls_acc(global_logits, target) * len(logits)
         tot_samples += len(logits)
@@ -161,7 +192,129 @@ def evaluate_attr(args, clip_model, loader, template, classnames, prompt=False, 
     global_acc /= tot_samples
     attr_acc = [(acc / tot_samples) for acc in attr_acc]
     return acc, global_acc, attr_acc
+'''
 
+
+@torch.no_grad()
+def evaluate_attr(args, clip_model, loader, template, classnames, prompt=False, visualize=False):
+    clip_model.eval()
+    tokenizer = transforms.get_text_tokenizer(clip_model.context_length)
+
+    if prompt:
+        texts = [classname.replace('_', ' ') for classname in classnames]
+        texts = tokenizer(classnames).cuda()
+    else:
+        texts = tokenize_texts(template=template, classnames=classnames, tokenizer=tokenizer)
+        
+    with torch.amp.autocast(device_type="cuda", dtype=torch.float16):
+        class_embeddings = clip_model.encode_text(texts, prompt=prompt)
+    text_features = class_embeddings / class_embeddings.norm(dim=-1, keepdim=True)
+
+    num_query = args.num_attr + 1
+    num_class = len(classnames)
+    query_class_correct = torch.zeros(num_query, num_class, device='cuda')
+    query_class_total = torch.zeros(num_query, num_class, device='cuda')
+    
+    total_acc = 0.
+    total_acc_attr = 0.
+    tot_samples = 0
+
+    all_logits = []
+    all_preds = []
+    all_targets = []
+
+    for i, (images, target) in enumerate(loader):
+        images, target = images.cuda(), target.cuda()
+        with torch.amp.autocast(device_type="cuda", dtype=torch.float16):
+            image_features, attn_weights = clip_model.encode_image(images, return_attn=True, attr=True)
+        image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+        
+        cosine_similarity = torch.einsum('bnd, cd -> bnc', image_features, text_features)
+        pre_logits = cosine_similarity[:, 0].unsqueeze(dim=1)
+        attr_logits = cosine_similarity[:, 1:]
+        attr_scores = sinkhorn_batch(attr_logits, epsilon=0.05) # B N Cx
+
+        attr_logits = attr_scores * attr_logits
+
+        logits = torch.cat([pre_logits, attr_logits], dim=1)
+        final_logits = logits.sum(dim=1)
+        attr_logits = attr_logits.sum(dim=1)
+        
+        preds = logits.argmax(dim=-1)  # (B, N)
+
+        all_logits.append(logits.cpu())
+        all_preds.append(preds.cpu())
+        all_targets.append(target.cpu())
+
+        for q in range(num_query):
+            for c in range(num_class):
+                mask = (target == c)
+                query_class_total[q, c] += mask.sum()
+                query_class_correct[q, c] += (preds[mask, q] == c).sum()
+        
+        total_acc += cls_acc(final_logits, target) * len(target)
+        total_acc_attr += cls_acc(attr_logits, target) * len(target)
+        tot_samples += len(target)
+        
+        # visualization
+        if visualize:
+            if i == 0:
+                plt.figure(figsize=(15, 6))
+                sns.heatmap(attr_scores[0].cpu(), cmap="viridis", annot=False)
+                plt.xlabel("Class index")
+                plt.ylabel("Query index")
+                plt.title("attribute scores per query-class")
+                plt.tight_layout()
+                plt.savefig(f"./vis/attr_heatmap_{args.exp_name}_target{classnames[target[0]]}.png", dpi=300)
+                plt.close()
+            if i <= 9:
+                try:
+                    preds = logits.sum(dim=1).argmax(dim=-1)
+                    visualize_attentionbar(images, attn_weights, preds, target, torch.arange(0, len(preds)), classnames, 1, args.dataset, args.exp_name, wrong=False, attr=True)
+                    visualize_attentionmap(images, attn_weights, preds, target, torch.arange(0, len(preds)), classnames, 1, args.dataset, args.exp_name, wrong=False, attr=True)
+                except Exception as e:
+                    print(e)
+
+    all_logits = torch.cat(all_logits, dim=0)   
+    all_preds = torch.cat(all_preds, dim=0)
+    all_targets = torch.cat(all_targets, dim=0)  
+
+    acc_matrix = (query_class_correct / (query_class_total + 1e-8)).detach().cpu().numpy()
+    overall_acc = (query_class_correct.sum(dim=1) / (query_class_total.sum(dim=1) + 1e-8)).detach().cpu().numpy()
+
+    avg_acc = total_acc / tot_samples
+    attr_acc = total_acc_attr / tot_samples
+
+    #plt.figure(figsize=(1.2 * num_class, 0.6 * num_query))
+    #sns.heatmap(acc_matrix, annot=True, fmt=".2f", cmap="Blues",
+    #            xticklabels=classnames, yticklabels=[f"Query {i}" for i in range(num_query)])
+    #plt.title("Class-wise Query-wise Accuracy")
+    #plt.xlabel("Class")
+    #plt.ylabel("Query (Attribute)")
+    #plt.tight_layout()
+    #plt.savefig(f"./vis/{args.exp_name}_query_class_acc_heatmap.png")
+    #plt.close()
+
+    best_query_per_class = np.argmax(acc_matrix, axis=0)
+    num_classes_per_query = np.bincount(best_query_per_class, minlength=num_query)
+    best_preds = all_preds[torch.arange(len(all_targets)), torch.tensor(best_query_per_class)[all_targets]]
+    oracle_acc = (best_preds == all_targets).float().mean().item()
+
+    all_logits_tensor = all_logits.float()
+    probs = torch.softmax(all_logits_tensor, dim=-1)
+    entropy = -torch.sum(probs * torch.log(probs + 1e-8), dim=-1) # B N
+    low_entropy_idx = torch.argmin(entropy, dim=-1).cpu().numpy()  # 각 샘플별 low-entropy query
+
+    # Oracle vs low-entropy query 선택 일치율
+    match_ratio = (low_entropy_idx == torch.tensor(best_query_per_class)[all_targets].cpu().numpy()).mean()
+
+    print("best query per class: ", best_query_per_class)
+    print("num classes per queries: ", num_classes_per_query)
+    print(f"Oracle-like accuracy (best query per class): {oracle_acc*100:.2f}%")
+    print(f"Low-entropy query vs Oracle match ratio: {match_ratio*100:.2f}%")
+    print(f"attr logit acc: {attr_acc}")
+
+    return avg_acc, overall_acc[0], overall_acc[1:]
 
 @torch.no_grad()
 def evaluate_attr_multiattn(args, clip_model, loader, template, classnames, prompt=False, visualize=False):

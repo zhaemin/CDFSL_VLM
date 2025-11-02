@@ -5,11 +5,15 @@ from contextlib import nullcontext
 from fs.utils.model_utils import trainable_norm_params, num_params
 from fs.utils.eval_utils import tokenize_texts, cls_acc, evaluate_attr
 
+from loralib.utils import (
+    mark_only_lora_as_trainable, apply_lora, get_lora_parameters, 
+    lora_state_dict, save_lora, load_lora
+)
+
 import core.vision_encoder.transforms as transforms
 
 import os
 import matplotlib.pyplot as plt
-
 
 import torch
 
@@ -128,9 +132,21 @@ def run_ln_only_attr(args, clip_model, logit_scale, dataset, train_loader, val_l
     new_trainable_params.append(clip_model.visual.attn_pool.attn.in_proj_bias)
     new_trainable_params.append(clip_model.visual.attn_pool.attr_probe)
     
+    # pretrained query tuning
+    clip_model.visual.attn_pool.probe.requires_grad_(True)
+    trainable_params.append(clip_model.visual.attn_pool.probe)
+    
+    # text proj tuning
+    #clip_model.text_projection.requires_grad_(True)
+    #trainable_params.append(clip_model.text_projection)
+    
+    # vision proj tuning
+    #clip_model.visual.proj.requires_grad_(True)
+    #trainable_params.append(clip_model.visual.proj)
+    
     print(f"Trainable parameters: {num_params(clip_model, trainable=True):,}")
     
-    optimizer = torch.optim.AdamW([{'params' : trainable_params, 'lr' : args.lr }, {'params' : new_trainable_params, 'lr' : 0.001}], lr=args.lr, weight_decay=args.wd, betas=(0.9, 0.999))
+    optimizer = torch.optim.AdamW([{'params' : trainable_params, 'lr' : args.lr }, {'params' : new_trainable_params, 'lr' : 5e-4}], lr=args.lr, weight_decay=args.wd, betas=(0.9, 0.999))
     print(f"Using AdamW with lr={args.lr}, wd={args.wd}, betas=(0.9, 0.999).")
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, total_iters, eta_min=1e-6)
     
@@ -147,7 +163,7 @@ def run_ln_only_attr(args, clip_model, logit_scale, dataset, train_loader, val_l
     while count_iters < total_iters:
         epoch += 1
         clip_model, count_iters = train_epoch(
-            clip_model, 
+            clip_model,
             optimizer, 
             scheduler, 
             scaler, 
@@ -171,8 +187,7 @@ def run_ln_only_attr(args, clip_model, logit_scale, dataset, train_loader, val_l
         print("loading checkpoint")
         state_dict = torch.load(f'checkpoint/{args.checkpoint}_{args.dataset}.pth', map_location='cuda')
         clip_model.load_state_dict(state_dict, strict=False)
-
-
+    
     #print('after_trained: ', clip_model.visual.attn_pool.attr_probe)
     
     '''

@@ -23,6 +23,8 @@ from core.vision_encoder.config import PEConfig, PETextConfig, PE_VISION_CONFIG,
 from loralib.layers import SelfAttentionLoRA
 
 from core.vision_encoder.multiattn import custom_multi_head_attention_forward
+from loralib.layers import PlainMultiheadAttentionLoRA
+
 import matplotlib.pyplot as plt
 
 logger = getLogger()
@@ -153,16 +155,17 @@ class AttentionPooling(nn.Module):
             )
         )
     
+    
     def init_attr_probe(self, num_attr_probe):
         self.attr_probe = nn.Parameter(torch.randn(1, num_attr_probe, self.embed_dim))
 
     def forward(self, x: torch.Tensor, text=False):
         '''
-        if not hasattr(self, 'k_cos_sim_done'):
-            K = x[0] @ self.attn.in_proj_weight[768:768*2].t() + self.attn.in_proj_bias[768:768*2]
-            K_norm = F.normalize(K, dim=-1)
+        if not hasattr(self, 'v_cos_sim_done'):
+            V = x[0] @ self.attn.in_proj_weight[768*2:].t() + self.attn.in_proj_bias[768*2:]
+            V_norm = F.normalize(V, dim=-1)
 
-            cos_sim = torch.einsum('nd,md->nm', K_norm, K_norm)
+            cos_sim = torch.einsum('nd,md->nm', V_norm, V_norm)
 
             plt.figure(figsize=(8, 8))
             plt.imshow(cos_sim.cpu().detach(), cmap='viridis')
@@ -170,12 +173,12 @@ class AttentionPooling(nn.Module):
             plt.title('Patch-Patch Cosine Similarity Heatmap')
             plt.xlabel('Patch Index')
             plt.ylabel('Patch Index')
-            plt.savefig(f'./vis/k_patch_cos_sim_after_tuning_k_proj.png')
+            plt.savefig(f'./vis/v_patch_cos_sim_after_v_proj.png')
             plt.close()
             
             self.k_cos_sim_done = True
         '''
-        
+
         batch, _, _ = x.shape
         if hasattr(self, 'attr_probe'): 
             probe = torch.cat([self.probe, self.attr_probe], dim=1)

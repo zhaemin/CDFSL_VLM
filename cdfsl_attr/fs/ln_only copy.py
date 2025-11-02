@@ -71,46 +71,15 @@ def train_epoch(clip_model, optimizer, scheduler, scaler, train_loader, test_loa
     return clip_model, count_iters
 
 
-def get_trainable_params(model, modality='both', vision_start=0, text_start=0):
-    assert modality in ('both', 'vision', 'text')
-    import torch.nn as nn
-    import numpy as np
-    from loralib.layers import LoRALayer, PlainMultiheadAttentionLoRA, SelfAttentionLoRA, LinearLoRA, MultiheadAttentionLoRAWOQproj
-    trainable_params = []
-
-    model.visual.attn_pool.attn = PlainMultiheadAttentionLoRA(model.visual.attn_pool.attn, r=32, enable_lora=['q', 'k']).cuda()
-    model.requires_grad_(False)
-
-    for name, param in model.visual.attn_pool.attn.named_parameters():
-        if 'lora' in name:
-            param.requires_grad_(True)
-
-    model.visual.attn_pool.probe.requires_grad_(True)
-
-    # layernorm param tuning
-    model.visual.ln_pre.requires_grad_(True)
-    model.visual.ln_post.requires_grad_(True)
-    model.ln_final.requires_grad_(True)
-
-    for name, module in model.named_modules():
-        if ".resblocks." in name and ".ln_" in name:
-            module.requires_grad_(True)
-
-    for name, param in model.named_parameters():
-        if param.requires_grad:
-            print(name, param.shape)
-            trainable_params.append(param)
-
-    return trainable_params
-
 
 def run_ln_only(args, clip_model, logit_scale, dataset, train_loader, val_loader, test_loader):
     
     clip_model = clip_model.cuda().float()
     total_iters = args.n_iters * args.shots
 
-    trainable_params = get_trainable_params(
-        clip_model,
+    # train only layer-norm instances
+    trainable_params, vision_trainable_params = trainable_norm_params(
+        clip_model, 
         modality=args.ln_modality, 
         vision_start=args.ln_vision_start,
         text_start=args.ln_text_start
@@ -118,8 +87,7 @@ def run_ln_only(args, clip_model, logit_scale, dataset, train_loader, val_loader
 
     print(f"Trainable parameters: {num_params(clip_model, trainable=True):,}")
     
-    #optimizer = torch.optim.AdamW(trainable_params, lr=args.lr, weight_decay=args.wd, betas=(0.9, 0.999))
-    optimizer = torch.optim.AdamW([{'params' : trainable_params, 'lr' : args.lr }], lr=args.lr, weight_decay=args.wd, betas=(0.9, 0.999))
+    optimizer = torch.optim.AdamW(trainable_params, lr=args.lr, weight_decay=args.wd, betas=(0.9, 0.999))
 
     print(f"Using AdamW with lr={args.lr}, wd={args.wd}, betas=(0.9, 0.999).")
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, total_iters, eta_min=1e-6)
@@ -161,6 +129,40 @@ def run_ln_only(args, clip_model, logit_scale, dataset, train_loader, val_loader
         print("loading checkpoint")
         state_dict = torch.load(f'checkpoint/{args.checkpoint}_{args.dataset}.pth', map_location='cuda')
         clip_model.load_state_dict(state_dict, strict=False)
+    
+    '''
+    os.makedirs('./vis', exist_ok=True)
+
+    W = clip_model.visual.attn_pool.attn.in_proj_weight.detach().cpu()
+    dim = clip_model.visual.width
+    W_Q, W_K, W_V = W[:dim], W[dim:2*dim], W[2*dim:]
+
+    b = clip_model.visual.attn_pool.attn.in_proj_bias.detach().cpu()
+    b_Q, b_K, b_V = b[:dim], b[dim:2*dim], b[2*dim:]
+
+    plt.figure(figsize=(10, 3))
+    for i, (name, w) in enumerate(zip(["Q", "K", "V"], [W_Q, W_K, W_V])):
+        plt.subplot(1, 3, i+1)
+        plt.hist(w.flatten().numpy(), bins=100, color='gray')
+        plt.title(f"{name} weight distribution")
+        plt.xlabel("value")
+        plt.ylabel("count")
+    plt.tight_layout()
+    plt.savefig(f'./vis/qkv_weight_{args.exp_name}.png')
+    plt.close()
+
+    plt.figure(figsize=(10, 3))
+    for i, (name, b_) in enumerate(zip(["Q", "K", "V"], [b_Q, b_K, b_V])):
+        plt.subplot(1, 3, i+1)
+        plt.hist(b_.flatten().numpy(), bins=100, color='orange')
+        plt.title(f"{name} bias distribution")
+        plt.xlabel("value")
+        plt.ylabel("count")
+    plt.tight_layout()
+    plt.savefig(f'./vis/qkv_bias_{args.exp_name}.png')
+    plt.close()
+    '''
+    
 
     # evaluate on test sets after training
     if args.setting == "base2new":

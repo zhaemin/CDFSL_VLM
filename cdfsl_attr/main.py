@@ -55,7 +55,7 @@ def get_arguments():
     parser.add_argument('--wd', default=1e-2, type=float)
     
     # experiment config
-    parser.add_argument('--mode', type=str, default='twostage', choices=['cliplora', 'ln_only', 'twostage', 'ln_only_patchloss', 'lora_patchloss', 'ln_cls', 'onestage', 'twostage_attr', 'visonly', "twostage_family", "prompt_tuning", "ln_only_attr", "ln_only_attr_slot"],
+    parser.add_argument('--mode', type=str, default='twostage', choices=['cliplora', 'ln_only', 'twostage', 'ln_only_patchloss', 'lora_patchloss', 'ln_cls', 'onestage', 'twostage_attr', 'visonly', "twostage_family", "prompt_tuning", "ln_only_attr", "ln_only_attr_slot", "ln_only_attr_1031"],
                         help=MODE_HELPER)
     parser.add_argument('--setting', default='standard', type=str, choices=['standard', 'base2new'], 
                         help="Setting for the experiment. Set to 'standard' for all-to-all (train categories = eval categories) or 'base2new' otherwise.")
