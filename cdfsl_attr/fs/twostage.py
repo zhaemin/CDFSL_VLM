@@ -5,7 +5,7 @@ import torch.nn.functional as F
 from contextlib import nullcontext
 from loralib import apply_lora, mark_only_lora_as_trainable, get_lora_parameters
 
-from fs.utils.eval_utils import tokenize_texts, tokenize_texts_with_CuPL, cls_acc
+from fs.utils.eval_utils import tokenize_texts, cls_acc
 from fs.utils.model_utils import trainable_norm_params, trainable_bias_params, num_params
 from fs.utils.visualize import visualize_attentionmap
 import core.vision_encoder.transforms as transforms
@@ -48,7 +48,7 @@ def prepare_for_first_stage(pe_model, args):
 
 
 class SingleStreamClassifier(nn.Module):
-    def __init__(self, pe_model, layer_idx, classnames, dataset_name, tokenizer, template="a photo of a {}."):
+    def __init__(self, pe_model, classnames, dataset_name, tokenizer, template="a photo of a {}."):
         super(SingleStreamClassifier, self).__init__()
 
         # let's keep a reference to the clip model (we will use it in the infer method)
@@ -57,7 +57,6 @@ class SingleStreamClassifier(nn.Module):
         
         # and also a reference to the visual backbone (handy for training code)
         self.backbone = pe_model.visual
-        self.layer_idx = layer_idx
         
         # linear classifier initialized with the text features of CLIP
         self._init_classifier(template, classnames, dataset_name)
@@ -72,8 +71,7 @@ class SingleStreamClassifier(nn.Module):
 
     def _init_classifier(self, template, classnames, dataset_name):
         with torch.no_grad():
-            #texts = tokenize_texts(template=template, classnames=classnames, tokenizer=self.tokenizer)
-            texts = tokenize_texts_with_CuPL(template=template, dataset=dataset_name, classnames=classnames, tokenizer=self.tokenizer, device='cuda')
+            texts = tokenize_texts(template=template, classnames=classnames, tokenizer=self.tokenizer)
             with torch.amp.autocast('cuda'):
                 class_embeddings = self.pe_model.encode_text(texts)
             class_embeddings = class_embeddings / class_embeddings.norm(dim=-1, keepdim=True)
@@ -83,7 +81,7 @@ class SingleStreamClassifier(nn.Module):
     def forward(self, x, no_grad_backbone=False):
         backbone_context_manager = torch.no_grad if no_grad_backbone else nullcontext
         with backbone_context_manager():
-            x = self.backbone(x, layer_idx=self.layer_idx) 
+            x = self.backbone(x) 
         x = x / x.norm(dim=-1, keepdim=True)
         
         classifier = self.classifier / self.classifier.norm(dim=-1, keepdim=True)
@@ -104,8 +102,7 @@ class SingleStreamClassifier(nn.Module):
         else:
             # category-level inference; we only embed the categories that are not in the classifier already
             missing_classnames = [cat for cat in categories if cat not in self.cat2id]
-            #texts = tokenize_texts(template=template, classnames=missing_classnames, tokenizer=self.tokenizer)
-            texts = tokenize_texts_with_CuPL(template=template, dataset=dataset_name, classnames=self.classnames, tokenizer=self.tokenizer, device='cuda')
+            texts = tokenize_texts(template=template, classnames=missing_classnames, tokenizer=self.tokenizer)
             with torch.amp.autocast('cuda'):
                 new_embeddings = self.pe_model.encode_text(texts)
             cat2new = {cat: new for cat, new in zip(missing_classnames, new_embeddings)}
@@ -123,7 +120,7 @@ class SingleStreamClassifier(nn.Module):
             self.inference_classifier = classifier
         
         # process the visual input
-        x, attn = self.backbone(x, return_attn = True, layer_idx=self.layer_idx)
+        x, attn = self.backbone(x, return_attn = True)
         x = x / x.norm(dim=-1, keepdim=True)  
 
         # then use the updated classifier to predict the current samples
@@ -241,7 +238,7 @@ def train_epoch(pe_model, optimizer, scheduler, scaler, train_loader, tokenized_
             with text_context_manager():
                 text_features = pe_model.encode_text(tokenized_texts)
             with vision_context_manager():
-                image_features = pe_model.encode_image(images, layer_idx=args.target_layer)
+                image_features = pe_model.encode_image(images)
         
         # well, you know that clip normalizes the features
         text_features = text_features / text_features.norm(dim=-1, keepdim=True)
@@ -278,7 +275,7 @@ def train_epoch(pe_model, optimizer, scheduler, scaler, train_loader, tokenized_
         subloss_epoch /= tot_samples
         current_lr = scheduler.get_last_lr()[0]
         print('[{}/{}] LR: {:.6f}, Acc: {:.4f}, Loss: {:.4f}'.format(count_iters, total_iters, current_lr, acc_train, loss_epoch))
-
+    
     return pe_model, count_iters
 
 
@@ -322,8 +319,6 @@ def run_twostage(args, pe_model, logit_scale, dataset, train_loader, val_loader,
     pe_model, trainable_params = prepare_for_first_stage(pe_model, args)
     pe_model = pe_model.float().cuda()
 
-    print(pe_model.attn_proj.attn.in_proj)
-
     print(f"Trainable parameters: {num_params(pe_model, trainable=True):,}")
     
     optimizer = torch.optim.AdamW([{'params' : trainable_params, 'lr' : args.lr }], lr=args.lr, weight_decay=args.wd, betas=(0.9, 0.999))
@@ -340,8 +335,7 @@ def run_twostage(args, pe_model, logit_scale, dataset, train_loader, val_loader,
 
     # we only need to tokenize once
     tokenizer = transforms.get_text_tokenizer(pe_model.context_length)
-    #tokenized_texts = tokenize_texts(template=dataset.template[0], classnames=dataset.classnames, tokenizer=tokenizer)
-    tokenized_texts = tokenize_texts(template=dataset.template[0], dataset=args.dataset, classnames=dataset.classnames, tokenizer=tokenizer, device='cuda')
+    tokenized_texts = tokenize_texts(template=dataset.template[0], classnames=dataset.classnames, tokenizer=tokenizer)
 
     # start training for a fixed number of gradient steps (total_iters)  
     while count_iters < cosine_iters:
@@ -360,7 +354,7 @@ def run_twostage(args, pe_model, logit_scale, dataset, train_loader, val_loader,
         if args.debug: break
     
     # once the first stage is done, we freeze everything and exploit the learned layer-norms
-    model = SingleStreamClassifier(pe_model, args.target_layer, dataset.classnames, args.dataset, tokenizer, template=dataset.template[0])
+    model = SingleStreamClassifier(pe_model, dataset.classnames, args.dataset, tokenizer, template=dataset.template[0])
     print("Initialized single stream classifier")
     optimizer = torch.optim.AdamW([model.classifier], lr=args.lr, weight_decay=args.wd, betas=(0.9, 0.999))
     print(f"[Second Stage] Using AdamW with lr={args.lr}, wd={args.wd}, betas=(0.9, 0.999).")
